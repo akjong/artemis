@@ -5,7 +5,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::StreamExt;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::types::{Collector, Executor, Module, Strategy};
 
@@ -202,16 +202,17 @@ where
                             info!(target: Module::ENGINE, "action channel closed, shutting down executor: {}", executor.name());
                             break;
                         }
-                        Err(e) => {
-                            error!(target: Module::ENGINE, "error receiving action: {}", e);
-                            break; // Exit the loop instead of panicking
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Drop backlog to keep up; don't break the loop.
+                            warn!(target: Module::ENGINE, "executor {} lagged by {} actions; skipping to latest", executor.name(), skipped);
+                            continue;
                         }
                     }
                 }
             });
         }
 
-        // Spawn strategies in separate threads.
+    // Spawn strategies in separate threads.
         for mut strategy in self.strategies {
             let mut event_receiver = event_sender.subscribe();
             let action_sender = action_sender.clone();
@@ -223,9 +224,8 @@ where
                     match event_receiver.recv().await {
                         Ok(event) => {
                             for action in strategy.process_event(event).await {
-                                match action_sender.send(action) {
-                                    Ok(_) => {}
-                                    Err(e) => error!(target: Module::ENGINE, "error sending action: {}", e),
+                                if let Err(e) = action_sender.send(action) {
+                                    error!(target: Module::ENGINE, "error sending action: {}", e);
                                 }
                             }
                         }
@@ -233,13 +233,10 @@ where
                             info!(target: Module::ENGINE, "event channel closed, shutting down strategy: {}", strategy.name());
                             break;
                         }
-                        Err(e) => {
-                            error!(target: Module::ENGINE,
-                                "error receiving event: {}, event_receiver len: {}",
-                                e,
-                                event_receiver.len()
-                            );
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Skip directly to latest without sleeping to reduce head-of-line blocking.
+                            warn!(target: Module::ENGINE, "strategy {} lagged by {} events; skipping to latest", strategy.name(), skipped);
+                            continue;
                         }
                     }
                 }
@@ -251,26 +248,25 @@ where
             let event_sender = event_sender.clone();
             set.spawn(async move {
                 info!(target: Module::ENGINE, "starting collector: {}", collector.name());
-                let mut event_stream = collector
-                    .get_event_stream()
-                    .await
-                    .expect("error getting event stream");
-                while let Some(event) = event_stream.next().await {
-                    match event_sender.send(event) {
-                        Ok(_) => {}
-                        Err(e) => error!(target: Module::ENGINE, "error sending event: {}", e),
+                match collector.get_event_stream().await {
+                    Ok(mut event_stream) => {
+                        while let Some(event) = event_stream.next().await {
+                            if let Err(e) = event_sender.send(event) {
+                                error!(target: Module::ENGINE, "error sending event: {}", e);
+                            }
+                        }
+                        info!(target: Module::ENGINE, "collector {} finished", collector.name());
+                    }
+                    Err(e) => {
+                        error!(target: Module::ENGINE, "error getting event stream for collector {}: {}", collector.name(), e);
                     }
                 }
-                info!(target: Module::ENGINE, "collector {} finished", collector.name());
             });
         }
 
-        // Drop the original senders to signal shutdown when all collectors are done
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            drop(event_sender);
-            drop(action_sender);
-        });
+        // Drop the original senders to signal shutdown once all clones (held by tasks) are dropped
+        drop(event_sender);
+        drop(action_sender);
 
         Ok(set)
     }
