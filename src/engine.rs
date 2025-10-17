@@ -212,7 +212,7 @@ where
             });
         }
 
-    // Spawn strategies in separate threads.
+        // Spawn strategies in separate threads.
         for mut strategy in self.strategies {
             let mut event_receiver = event_sender.subscribe();
             let action_sender = action_sender.clone();

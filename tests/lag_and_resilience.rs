@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use artemis::{Engine, types::{Collector, CollectorStream, Executor, Strategy}};
+use artemis::{
+    Engine,
+    types::{Collector, CollectorStream, Executor, Strategy},
+};
 use async_trait::async_trait;
 use eyre::Result;
 use tokio::sync::mpsc;
@@ -15,7 +18,9 @@ struct Act(u32);
 struct FastCollector(u32);
 #[async_trait]
 impl Collector<Evt> for FastCollector {
-    fn name(&self) -> &str { "FastCollector" }
+    fn name(&self) -> &str {
+        "FastCollector"
+    }
     async fn get_event_stream(&self) -> Result<CollectorStream<'_, Evt>> {
         let (tx, rx) = mpsc::unbounded_channel();
         let n = self.0;
@@ -31,7 +36,9 @@ impl Collector<Evt> for FastCollector {
 struct SlowStrategy(Arc<Mutex<u64>>);
 #[async_trait]
 impl Strategy<Evt, Act> for SlowStrategy {
-    fn name(&self) -> &str { "SlowStrategy" }
+    fn name(&self) -> &str {
+        "SlowStrategy"
+    }
     async fn process_event(&mut self, e: Evt) -> Vec<Act> {
         // simulate slow processing to provoke lag
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -43,7 +50,9 @@ impl Strategy<Evt, Act> for SlowStrategy {
 struct CollectExec(Arc<Mutex<Vec<u32>>>);
 #[async_trait]
 impl Executor<Act> for CollectExec {
-    fn name(&self) -> &str { "CollectExec" }
+    fn name(&self) -> &str {
+        "CollectExec"
+    }
     async fn execute(&self, a: Act) -> Result<()> {
         self.0.lock().unwrap().push(a.0);
         Ok(())
